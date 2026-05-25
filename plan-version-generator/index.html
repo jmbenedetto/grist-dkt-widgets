@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plan version generator</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">DKT DRP · Plan version creation</p>
+        <h1>Create inactive plan version</h1>
+        <p class="subtitle">Create a new inactive plan version from current live support inputs. Activation stays manual outside this widget.</p>
+      </header>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Inputs</h2><span id="status-badge" class="badge badge-idle">Idle</span></div>
+        <div class="form-grid">
+          <label>Cycle <input id="cycle-input" placeholder="YYYYMM" maxlength="6" /></label>
+          <label>Location <select id="location-select"></select></label>
+          <label>Plan name <input id="name-input" placeholder="ex: baseline" /></label>
+        </div>
+        <button id="preview-button" class="secondary-button" type="button">Preview</button>
+        <button id="create-button" class="primary-button" type="button" disabled>Create inactive plan version</button>
+        <p id="status-text" class="status-text">Loading Grist tables…</p>
+      </section>
+
+      <section class="panel" id="resume-panel" hidden>
+        <div class="panel-head"><h2>Resume interrupted generation</h2></div>
+        <p class="status-text" id="resume-text">No interrupted plan versions found.</p>
+        <button id="resume-button" class="primary-button" type="button">Resume generation</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Preview</h2></div>
+        <dl class="details">
+          <div><dt>Final name</dt><dd id="final-name">—</dd></div>
+          <div><dt>Version key</dt><dd id="version-key">—</dd></div>
+          <div><dt>Products</dt><dd id="product-count">—</dd></div>
+          <div><dt>Periods</dt><dd id="period-count">—</dd></div>
+          <div><dt>Support rows</dt><dd id="support-count">—</dd></div>
+          <div><dt>Output rows</dt><dd id="output-count">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel note-panel">
+        <h2>After creation</h2>
+        <p>The created plan version has <code>flag_ativo = 0</code>. Review generated rows in Grist and activate manually only after approval.</p>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

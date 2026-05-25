@@ -5,6 +5,7 @@ Grist custom widgets for the DKT DRP project.
 ## Widgets
 
 - `dkt-summary-v2/` — DKT proposed-orders summary widget for `SaidaDados_ProjecaoEstoque`.
+- `plan-version-generator/` — DKT plan-version generator widget for creating and validating plan versions in Grist.
 
 ## DKT summary v2
 
