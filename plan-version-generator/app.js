@@ -1,5 +1,6 @@
 const el = {
   cycle: document.getElementById('cycle-input'),
+  endMonth: document.getElementById('end-month-input'),
   location: document.getElementById('location-select'),
   name: document.getElementById('name-input'),
   preview: document.getElementById('preview-button'),
@@ -10,6 +11,7 @@ const el = {
   versionKey: document.getElementById('version-key'),
   productCount: document.getElementById('product-count'),
   periodCount: document.getElementById('period-count'),
+  periodRange: document.getElementById('period-range'),
   supportCount: document.getElementById('support-count'),
   outputCount: document.getElementById('output-count'),
   resumePanel: document.getElementById('resume-panel'),
@@ -21,13 +23,46 @@ const COPY_FIELDS = [
   'periodo','id_local','descricao','divisao','fornecedor','categoria','abc_index','pqr_index','xyz_index','index_produto','custo','preco_venda_medio','trigger_level_lote','lote','lead_time_meses','meses_entre_pedidos','recebimentos_confirmados','demanda','flag_validate','metodo_estoque_seguranca','nivel_servico','cov_trimestre_referencia','cov_qtd_venda_trimestre_y_minus_1','cov_qtd_venda_trimestre_sinal_atual','cov_qtd_venda_trimestre_sinal_resolvido','cov_qtd_venda_media_diaria_trimestre_y_minus_1','cov_qtd_venda_media_diaria_trimestre_atual','cov_qtd_venda_media_diaria_trimestre_blended','qtd_std_venda_U12M','estoque_inicial_m00','cobertura_objetivo_dias','extra_cobertura_dias','qtd_demanda_12M','id_produto'
 ];
 
-let state = { locations: [], plans: [], products: [], periods: [], supportRows: [], outputRows: [], preview: null, running: false, resumablePlan: null };
+let state = { locations: [], plans: [], products: [], periods: [], supportRows: [], outputRows: [], preview: null, running: false, resumablePlan: null, endOverridden: false };
 
 function docApi(){ return window.grist?.docApi || window.grist?.raw?.docApi; }
 function setBadge(kind,label){ el.badge.className = `badge badge-${kind}`; el.badge.textContent = label; }
 function setStatus(msg){ el.status.textContent = msg; }
 function normalizeName(value){ return String(value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'plano'; }
-function normalizeCycle(value){ return String(value || '').replace(/\D/g,'').slice(0,6); }
+function monthNumber(value, label){
+  if(typeof value !== 'string' || !/^[0-9]{6}$/.test(value)) throw new Error(`${label} must be canonical YYYYMM.`);
+  const year = Number(value.slice(0,4)), month = Number(value.slice(4));
+  if(year < 1 || month < 1 || month > 12) throw new Error(`${label} must be a valid calendar month.`);
+  return year * 12 + month - 1;
+}
+function syncEndDefault(){
+  if(state.endOverridden) return;
+  try{
+    const end = monthNumber(el.cycle.value, 'Cycle') + 12;
+    const year = Math.floor(end / 12);
+    el.endMonth.value = year <= 9999 ? `${String(year).padStart(4,'0')}${String(end % 12 + 1).padStart(2,'0')}` : '';
+  }catch{ el.endMonth.value = ''; }
+}
+function selectedPeriods(ciclo, endMonth){
+  const last = monthNumber(endMonth, 'Final month') - monthNumber(ciclo, 'Cycle');
+  if(last < 0) throw new Error('Final month must not precede the cycle.');
+  if(last > 99) throw new Error('Selected horizon is outside the supported MXX catalog.');
+  const periods = [];
+  for(let index = 0; index <= last; index++){
+    const label = `M${String(index).padStart(2,'0')}`;
+    const matches = state.periods.filter(p => p.periodo === label);
+    if(matches.length !== 1 || matches[0].idx_periodo !== index || state.periods.filter(p => p.idx_periodo === index).length !== 1){
+      throw new Error(`Unsupported horizon: ${label} must exist exactly once with idx_periodo ${index}.`);
+    }
+    periods.push(matches[0]);
+  }
+  return periods;
+}
+function productIdentity(row){
+  const value = row.id_produto || row.produto;
+  if(typeof value !== 'string' || !value || value.trim() !== value) throw new Error('Product keys must be nonblank canonical text.');
+  return value;
+}
 function versionKey(ciclo, local, nome){ return `${ciclo}_${local}_${normalizeName(nome)}`; }
 function rowId(row){ return row?.id || row?.recordId; }
 function chunk(list, size){ const out=[]; for(let i=0;i<list.length;i+=size) out.push(list.slice(i,i+size)); return out; }
@@ -49,20 +84,24 @@ async function fetchRows(table){ const api=docApi(); if(!api?.fetchTable) throw 
 async function apply(actions){ const api=docApi(); if(!api?.applyUserActions) throw new Error('Grist applyUserActions unavailable.'); for(const batch of chunk(actions, 200)) await api.applyUserActions(batch); }
 
 function computePreview(){
-  const ciclo = normalizeCycle(el.cycle.value); el.cycle.value = ciclo;
+  syncEndDefault();
+  const ciclo = el.cycle.value;
+  const endMonth = el.endMonth.value;
+  const periods = selectedPeriods(ciclo, endMonth);
   const local = el.location.value;
   const baseName = el.name.value.trim();
-  if(!/^\d{6}$/.test(ciclo)) throw new Error('Cycle must be YYYYMM.');
-  if(!local) throw new Error('Choose a valid location from Entrada_Locais.');
+  if(!state.locations.some(l => String(l.id_local) === local && l.flag_ativo !== false && l.flag_ativo !== 0)) throw new Error('Choose a valid active location from Entrada_Locais.');
   if(!baseName) throw new Error('Enter a plan name.');
   const used = new Set(state.plans.map(p => String(p.versao_plano || '')));
   let finalName = normalizeName(baseName); let key = versionKey(ciclo, local, finalName); let suffix = 2;
   while(used.has(key)){ finalName = `${normalizeName(baseName)}_v${suffix}`; key = versionKey(ciclo, local, finalName); suffix += 1; }
   const products = state.products.filter(p => String(p.id_local || '') === local && p.id_produto);
-  const periods = state.periods.filter(p => p.periodo);
-  return { ciclo, local, nome: finalName, versao_plano: key, products, periods, supportCount: products.length * periods.length };
+  const productKeys = products.map(productIdentity);
+  if(!productKeys.length || new Set(productKeys).size !== productKeys.length) throw new Error('Eligible product keys must be nonempty and unique.');
+  return { ciclo, endMonth, local, nome: finalName, versao_plano: key, products, periods, supportCount: products.length * periods.length };
 }
 function renderPreview(p){
+  el.periodRange.textContent = p ? `M00–${p.periods[p.periods.length - 1].periodo} · ${p.ciclo}–${p.endMonth}` : '—';
   el.finalName.textContent = p?.nome || '—'; el.versionKey.textContent = p?.versao_plano || '—'; el.productCount.textContent = p ? p.products.length : '—'; el.periodCount.textContent = p ? p.periods.length : '—'; el.supportCount.textContent = p ? p.supportCount : '—'; el.outputCount.textContent = p ? p.supportCount : '—'; el.create.disabled = !p || !p.supportCount || state.running;
 }
 function installNavigationWarning(){
@@ -78,44 +117,67 @@ function installNavigationWarning(){
     }
   });
 }
-async function refreshTables(){
+async function refreshTables({announce = false} = {}){
+  const selectedLocation = el.location.value;
+  const preserveLocation = state.locations.length > 0 || selectedLocation !== '';
   const [locations, plans, products, periods, supportRows, outputRows] = await Promise.all([
     fetchRows('Entrada_Locais'), fetchRows('Entrada_VersoesPlano'), fetchRows('Entrada_Produtos'), fetchRows('Entrada_Periodo'), fetchRows('Apoio_ProjecaoEstoque'), fetchRows('SaidaDados_ProjecaoEstoque')
   ]);
   state = {...state, locations, plans, products, periods, supportRows, outputRows};
   el.location.innerHTML = '';
-  for(const loc of locations.filter(l => l.flag_ativo !== false && l.id_local)){
+  for(const loc of locations.filter(l => l.flag_ativo !== false && l.flag_ativo !== 0 && l.id_local)){
     const opt = document.createElement('option'); opt.value = loc.id_local; opt.textContent = loc.nome ? `${loc.nome} (${loc.id_local})` : loc.id_local; el.location.appendChild(opt);
   }
+  if(preserveLocation) el.location.value = locations.some(l => String(l.id_local) === selectedLocation && l.flag_ativo !== false && l.flag_ativo !== 0) ? selectedLocation : '';
   renderResumePanel();
-  setStatus(`Loaded ${locations.length} locations, ${products.length} products, ${periods.length} periods.`);
+  if(announce) setStatus(`Loaded ${locations.length} locations, ${products.length} products, ${periods.length} periods.`);
 }
 function planRows(planId){
   const supportRows = state.supportRows.filter(r => Number(r.link_versao_plano) === Number(planId));
   const outputRows = state.outputRows.filter(r => Number(r.link_versao_plano) === Number(planId));
   return {supportRows, outputRows};
 }
-function outputKey(row){ return `${row.id_produto || row.produto || ''}|${row.periodo || ''}`; }
-function missingOutputRows(planId){
-  const {supportRows, outputRows} = planRows(planId);
-  const existing = new Set(outputRows.map(outputKey));
-  return supportRows.filter(row => !existing.has(outputKey(row)));
+function outputKey(row){ return `${productIdentity(row)}|${row.periodo}`; }
+function requireSavedContext(plan, ciclo, endMonth, local){
+  if(!plan || plan.ciclo !== ciclo || plan.ano_mes_final_projecao !== endMonth || plan.local !== local) throw new Error('Saved cycle/end/location changed during generation. Stop for inspection.');
+}
+function validateMaterialization(plan, expectedProducts){
+  if(!plan) throw new Error('Saved version is no longer available. Stop for inspection.');
+  const periods = selectedPeriods(plan.ciclo, plan.ano_mes_final_projecao);
+  const allowed = new Set(periods.map(p => p.periodo));
+  const {supportRows, outputRows} = planRows(rowId(plan));
+  const supportKeys = new Set(), outputKeys = new Set(), products = new Set();
+  function checkedKey(row){
+    if(typeof row.periodo !== 'string' || !/^M[0-9]{2}$/.test(row.periodo) || !allowed.has(row.periodo)) throw new Error('Materialized period contradicts the saved horizon. Stop for inspection.');
+    return outputKey(row);
+  }
+  for(const row of supportRows){
+    const key = checkedKey(row);
+    if(supportKeys.has(key)) throw new Error('Duplicate support key. Stop for inspection.');
+    supportKeys.add(key); products.add(productIdentity(row));
+  }
+  if(!products.size || supportKeys.size !== products.size * periods.length) throw new Error('Support must be a complete rectangular product × saved-period grid. Stop for inspection.');
+  if(expectedProducts && (products.size !== expectedProducts.length || expectedProducts.some(p => !products.has(productIdentity(p))))) throw new Error('Support products contradict the creation request. Stop for inspection.');
+  for(const row of outputRows){
+    const key = checkedKey(row);
+    if(outputKeys.has(key)) throw new Error('Duplicate output key. Stop for inspection.');
+    if(!supportKeys.has(key)) throw new Error('Output is not a subset of saved support. Stop for inspection.');
+    outputKeys.add(key);
+  }
+  return {supportRows, outputRows, missing: supportRows.filter(row => !outputKeys.has(outputKey(row)))};
 }
 function renderResumePanel(){
-  const candidates = state.plans
-    .filter(plan => plan.status_geracao === 'generating')
-    .map(plan => ({plan, ...planRows(rowId(plan))}))
-    .filter(item => item.supportRows.length > item.outputRows.length);
-  state.resumablePlan = candidates[0]?.plan || null;
-  if (!state.resumablePlan) {
-    el.resumePanel.hidden = true;
-    return;
+  state.resumablePlan = state.plans.find(plan => plan.status_geracao === 'generating') || null;
+  el.resumePanel.hidden = !state.resumablePlan;
+  if(!state.resumablePlan) return;
+  try{
+    const {supportRows, outputRows} = validateMaterialization(state.resumablePlan);
+    el.resumeText.textContent = `Plan ${state.resumablePlan.versao_plano} is incomplete: ${outputRows.length}/${supportRows.length} output rows copied. Resume uses its saved cycle/end and copies only missing rows.`;
+    el.resumeButton.disabled = state.running;
+  }catch(err){
+    el.resumeText.textContent = `Plan ${state.resumablePlan.versao_plano}: ${err.message}`;
+    el.resumeButton.disabled = true;
   }
-  const planId = rowId(state.resumablePlan);
-  const {supportRows, outputRows} = planRows(planId);
-  el.resumePanel.hidden = false;
-  el.resumeText.textContent = `Plan ${state.resumablePlan.versao_plano} is incomplete: ${outputRows.length}/${supportRows.length} output rows copied. Resume will copy only missing rows.`;
-  el.resumeButton.disabled = state.running;
 }
 function buildSupportActions(planId, p){
   const existing = new Set(state.supportRows.filter(r => Number(r.link_versao_plano) === Number(planId)).map(r => `${r.id_produto || r.produto}|${r.periodo}`));
@@ -151,43 +213,62 @@ async function preview(){
   try{ state.preview = computePreview(); renderPreview(state.preview); setBadge('success','Ready'); setStatus('Preview ready. Final name/key shown before creation.'); }
   catch(err){ state.preview=null; renderPreview(null); setBadge('error','Fix inputs'); setStatus(err.message); }
 }
+function refreshPreviewQuietly(){
+  try{ state.preview = computePreview(); }catch{ state.preview = null; }
+  renderPreview(state.preview);
+}
 async function resumePlan(){
   if(state.running || !state.resumablePlan) return;
+  const planId = rowId(state.resumablePlan);
   state.running = true; el.resumeButton.disabled = true; setBadge('running','Resuming'); setStatus('Resuming interrupted generation… Keep this widget open until completion.');
   try{
-    const planId = rowId(state.resumablePlan);
-    const missing = missingOutputRows(planId);
+    await refreshTables();
+    const plan = state.plans.find(p => rowId(p) === planId && p.status_geracao === 'generating');
+    if(!plan) throw new Error('Saved interrupted version is no longer available.');
+    const {missing} = validateMaterialization(plan);
     await copyOutputRowsWithProgress(planId, missing);
     await refreshTables();
-    const {supportRows, outputRows} = planRows(planId);
-    if(outputRows.length !== supportRows.length) throw new Error(`Resume incomplete: ${outputRows.length}/${supportRows.length} output rows copied.`);
+    const savedPlan = state.plans.find(p => rowId(p) === planId);
+    requireSavedContext(savedPlan, plan.ciclo, plan.ano_mes_final_projecao, plan.local);
+    const {supportRows, outputRows, missing: remaining} = validateMaterialization(savedPlan);
+    if(remaining.length) throw new Error(`Resume incomplete: ${outputRows.length}/${supportRows.length} output rows copied.`);
     await apply([['UpdateRecord','Entrada_VersoesPlano',planId,{status_geracao:'generated',qtd_linhas_geradas:outputRows.length,gerado_em:new Date().toISOString(),erro_geracao:''}]]);
-    setBadge('success','Resumed'); setStatus(`Completed ${state.resumablePlan.versao_plano}: ${outputRows.length}/${supportRows.length} output rows copied.`);
+    setBadge('success','Resumed'); setStatus(`Completed ${plan.versao_plano}: ${outputRows.length}/${supportRows.length} output rows copied.`);
   } catch(err) {
     setBadge('error','Error'); setStatus(err.message || String(err));
   } finally {
-    state.running=false; await refreshTables().catch(()=>{}); await preview().catch(()=>{});
+    state.running=false; await refreshTables().catch(()=>{}); refreshPreviewQuietly();
   }
 }
 async function createPlan(){
   if(state.running) return;
   state.running = true; el.create.disabled = true; setBadge('running','Creating'); setStatus('Creating inactive plan version… Keep this widget open until completion. Leaving now may create a partial plan.');
   try{
-    const p = state.preview || computePreview();
-    await apply([['AddRecord','Entrada_VersoesPlano',null,{nome:p.nome,ciclo:p.ciclo,local:p.local,flag_ativo:false,criado_em:new Date().toISOString(),criado_por:'plan-version-generator',status_geracao:'generating',qtd_linhas_geradas:0,erro_geracao:''}]]);
+    // A preview is advisory. Refresh and revalidate the actual request before any write.
+    await refreshTables();
+    const p = computePreview();
+    await apply([['AddRecord','Entrada_VersoesPlano',null,{nome:p.nome,ciclo:p.ciclo,ano_mes_final_projecao:p.endMonth,local:p.local,flag_ativo:false,criado_em:new Date().toISOString(),criado_por:'plan-version-generator',status_geracao:'generating',qtd_linhas_geradas:0,erro_geracao:''}]]);
     await refreshTables();
     const plan = state.plans.find(row => row.versao_plano === p.versao_plano);
     const planId = rowId(plan); if(!planId) throw new Error('Created plan version row was not found after insert.');
+    requireSavedContext(plan, p.ciclo, p.endMonth, p.local);
     await apply(buildSupportActions(planId, p));
     await refreshTables();
-    const source = state.supportRows.filter(r => Number(r.link_versao_plano) === Number(planId));
-    await copyOutputRowsWithProgress(planId, source);
+    const savedPlan = state.plans.find(row => rowId(row) === planId);
+    requireSavedContext(savedPlan, p.ciclo, p.endMonth, p.local);
+    const {supportRows: source, missing} = validateMaterialization(savedPlan, p.products);
+    await copyOutputRowsWithProgress(planId, missing);
+    await refreshTables();
+    const finalPlan = state.plans.find(row => rowId(row) === planId);
+    requireSavedContext(finalPlan, p.ciclo, p.endMonth, p.local);
+    const result = validateMaterialization(finalPlan, p.products);
+    if(result.missing.length) throw new Error('Creation incomplete. Stop for inspection.');
     await apply([['UpdateRecord','Entrada_VersoesPlano',planId,{status_geracao:'generated',qtd_linhas_geradas:source.length,gerado_em:new Date().toISOString(),erro_geracao:''}]]);
     setBadge('success','Created'); setStatus(`Created inactive plan version ${p.versao_plano} with ${source.length} output rows. Activate manually after review.`);
   }catch(err){ setBadge('error','Error'); setStatus(err.message || String(err)); }
-  finally{ state.running=false; await refreshTables().catch(()=>{}); await preview().catch(()=>{}); }
+  finally{ state.running=false; await refreshTables().catch(()=>{}); refreshPreviewQuietly(); }
 }
 
-el.preview.addEventListener('click', preview); el.create.addEventListener('click', createPlan); el.resumeButton.addEventListener('click', resumePlan); [el.cycle, el.location, el.name].forEach(node => node.addEventListener('input', () => preview().catch(()=>{})));
+el.preview.addEventListener('click', preview); el.create.addEventListener('click', createPlan); el.resumeButton.addEventListener('click', resumePlan); el.endMonth.addEventListener('input', () => { state.endOverridden = true; preview().catch(()=>{}); }); [el.cycle, el.location, el.name].forEach(node => node.addEventListener('input', () => preview().catch(()=>{})));
 installNavigationWarning();
-(async function init(){ try{ if(window.grist?.ready) window.grist.ready({requiredAccess:'full'}); await refreshTables(); await preview(); } catch(err){ setBadge('error','Error'); setStatus(err.message || String(err)); } })();
+(async function init(){ try{ if(window.grist?.ready) window.grist.ready({requiredAccess:'full'}); await refreshTables({announce:true}); await preview(); } catch(err){ setBadge('error','Error'); setStatus(err.message || String(err)); } })();

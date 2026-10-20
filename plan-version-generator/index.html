@@ -19,6 +19,7 @@
         <div class="panel-head"><h2>Inputs</h2><span id="status-badge" class="badge badge-idle">Idle</span></div>
         <div class="form-grid">
           <label>Cycle <input id="cycle-input" placeholder="YYYYMM" maxlength="6" /></label>
+          <label>Final month, inclusive <input id="end-month-input" placeholder="YYYYMM, default cycle + 12 months" maxlength="6" /></label>
           <label>Location <select id="location-select"></select></label>
           <label>Plan name <input id="name-input" placeholder="ex: baseline" /></label>
         </div>
@@ -39,6 +40,7 @@
           <div><dt>Final name</dt><dd id="final-name">—</dd></div>
           <div><dt>Version key</dt><dd id="version-key">—</dd></div>
           <div><dt>Products</dt><dd id="product-count">—</dd></div>
+          <div><dt>Selected horizon</dt><dd id="period-range">—</dd></div>
           <div><dt>Periods</dt><dd id="period-count">—</dd></div>
           <div><dt>Support rows</dt><dd id="support-count">—</dd></div>
           <div><dt>Output rows</dt><dd id="output-count">—</dd></div>
